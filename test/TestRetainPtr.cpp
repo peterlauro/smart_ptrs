@@ -69,7 +69,7 @@ namespace stdx::test
 
   using test_types = ::testing::Types<Base, Derived, ThreadSafeBase, ThreadSafeDerived>;
 
-  TYPED_TEST_SUITE(StdX_Memory_retain_ptr_test, test_types);
+  TYPED_TEST_SUITE(StdX_Memory_retain_ptr_test, test_types,);
 
   TYPED_TEST(StdX_Memory_retain_ptr_test, basic_usage)
   {
@@ -111,21 +111,25 @@ namespace stdx::test
 #ifdef _MSC_VER
   // just an example of defined traits on for WIN COM objects
 
-  //the traits need to implement at least increment and decrement methods
-  struct COM_Traits
-  {
-    static void increment(IUnknown* ptr) { ptr->AddRef(); }
-    static void decrement(IUnknown* ptr) { ptr->Release(); }
-  };
-
-  template<typename T>
-  using COM_Ptr = stdx::retain_ptr<T, COM_Traits>;
-
-  interface ILookup : public IUnknown, public stdx::atomic_reference_count<ILookup>
+  interface ILookup : public IUnknown
   {
     virtual HRESULT _stdcall LookupByName(LPTSTR lpName, TCHAR **lplpNumber) = 0;
     virtual HRESULT _stdcall LookupByNumber(LPTSTR lpNUmber, TCHAR **lplpName) = 0;
   };
+
+  //the traits need to implement at least increment and decrement methods
+  struct com_traits
+  {
+    static void increment(IUnknown* ptr) { ptr->AddRef(); }
+    static void decrement(IUnknown* ptr)
+    {
+      // coverity[free] - Intentional
+      ptr->Release();
+    }
+  };
+
+  template<typename T>
+  using com_ptr = stdx::retain_ptr<T, com_traits>;
 
   struct LookupResource
   {
@@ -140,7 +144,7 @@ namespace stdx::test
     ILookup const* operator->() const noexcept { return this->m_resource.get(); }
 
   protected:
-    COM_Ptr<ILookup> m_resource{};
+    com_ptr<ILookup> m_resource{};
   };
 #endif
 
@@ -165,11 +169,11 @@ namespace stdx::test
 
   TEST(StdX_Memory_retain_ptr, construct_with_retain_object)
   {
-    Derived* p = new Derived();
-    stdx::retain_ptr<Derived> ip(p, stdx::retain_object);
+    auto up = std::make_unique<Derived>();
+    stdx::retain_ptr<Derived> ip(up.get(), stdx::retain_object);
     EXPECT_TRUE(ip);
     EXPECT_EQ(ip.use_count(), 2);
-    EXPECT_EQ(ip.get(), p);
+    EXPECT_EQ(ip.get(), up.get());
   }
 
   TEST(StdX_Memory_retain_ptr, hash)
@@ -301,15 +305,66 @@ namespace stdx::test
 
   TEST(StdX_Memory_retain_ptr, test_retain_assign_from_rvalue)
   {
-    auto base = RetainBase(new MyBase());
-    EXPECT_TRUE(base);
-    EXPECT_EQ(base.use_count(), 1);
-    auto baseCopy = base;
-    EXPECT_TRUE(baseCopy);
-    EXPECT_EQ(base.use_count(), 2);
-    base = RetainSub(new MySub(42));
-    EXPECT_TRUE(base);
-    EXPECT_EQ(base.use_count(), 1);
+    {
+      auto base = RetainBase(new MyBase());
+      EXPECT_TRUE(base);
+      EXPECT_EQ(base.use_count(), 1);
+      auto baseCopy = base;  //copy-construction
+      EXPECT_TRUE(baseCopy);
+      EXPECT_EQ(base.use_count(), 2);
+      EXPECT_EQ(baseCopy.use_count(), 2);
+      auto sub = RetainSub(new MySub(42));
+      EXPECT_EQ(sub.use_count(), 1);
+      auto sub2 = sub;
+      EXPECT_EQ(sub2.use_count(), 2);
+      EXPECT_EQ(sub.use_count(), 2);
+      base = std::move(sub2);  //move-assignment
+      EXPECT_TRUE(base);
+      EXPECT_EQ(base.use_count(), 2);
+      EXPECT_EQ(baseCopy.use_count(), 1);
+    }
+
+    {
+      auto sub1 = RetainSub(new MySub(42));
+      EXPECT_TRUE(sub1);
+      EXPECT_EQ(sub1.use_count(), 1);
+      auto sub2 = RetainSub(new MySub(24));
+      EXPECT_TRUE(sub2);
+      EXPECT_EQ(sub2.use_count(), 1);
+
+      sub1 = std::move(sub2);  // move-assignment
+      EXPECT_TRUE(sub1);
+      EXPECT_FALSE(sub2);
+      EXPECT_EQ(sub1.use_count(), 1);
+      EXPECT_EQ(sub2.use_count(), 0);
+    }
+  }
+
+  TEST(StdX_Memory_retain_ptr, test_retain_assign_from_lvalue)
+  {
+    {
+      auto base = RetainBase(new MyBase());
+      EXPECT_TRUE(base);
+      EXPECT_EQ(base.use_count(), 1);
+      const auto sub = RetainSub(new MySub(42));
+      EXPECT_TRUE(sub);
+      EXPECT_EQ(sub.use_count(), 1);
+      base = sub; //copy-assignment
+      EXPECT_EQ(base.use_count(), 2);
+      EXPECT_EQ(sub.use_count(), 2);
+    }
+
+    {
+      auto sub1 = RetainSub(new MySub(24));
+      EXPECT_TRUE(sub1);
+      EXPECT_EQ(sub1.use_count(), 1);
+      auto sub2 = RetainSub(new MySub(42));
+      EXPECT_TRUE(sub2);
+      EXPECT_EQ(sub2.use_count(), 1);
+      sub1 = sub2; //copy-assignment
+      EXPECT_EQ(sub1.use_count(), 2);
+      EXPECT_EQ(sub2.use_count(), 2);
+    }
   }
 
   RetainBase func_return_subclass()
@@ -342,6 +397,7 @@ namespace stdx::test
       auto sp = stdx::dynamic_pointer_cast<MySub>(func_return_subclass());
       EXPECT_TRUE(sp);
       EXPECT_EQ(sp.use_count(), 1);
+      EXPECT_EQ(sp->m_x, 42);
     }
   }
 
@@ -369,4 +425,4 @@ namespace stdx::test
       EXPECT_EQ(bp.use_count(), 1);
     }
   }
-}
+} // end of namespace stdx::test

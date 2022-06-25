@@ -62,7 +62,7 @@ namespace stdx
      */
     template<typename Traits, typename P>
     using has_decrement = decltype(Traits::decrement(std::declval<P>()));
-  }
+  } // end of namespace detail
 
   template<typename T> struct retain_traits;
 
@@ -145,9 +145,7 @@ namespace stdx
     using element_type = T;
 
     template<typename U
-      requires_T(
-        std::is_base_of_v<U, T>
-      )
+      requires_T(std::is_base_of_v<U, T>)
     >
     static void increment(atomic_reference_count<U>* ptr) noexcept
     {
@@ -155,9 +153,7 @@ namespace stdx
     }
 
     template<typename U
-      requires_T(
-        std::is_base_of_v<U, T>
-      )
+      requires_T(std::is_base_of_v<U, T>)
     >
     static void decrement(atomic_reference_count<U>* ptr) noexcept
     {
@@ -169,9 +165,7 @@ namespace stdx
     }
 
     template<typename U
-      requires_T(
-        std::is_base_of_v<U, T>
-      )
+      requires_T(std::is_base_of_v<U, T>)
     >
     [[nodiscard]]
     static typename atomic_reference_count<U>::size_type use_count(atomic_reference_count<U>* ptr) noexcept
@@ -180,9 +174,7 @@ namespace stdx
     }
 
     template<typename U
-      requires_T(
-        std::is_base_of_v<U, T>
-      )
+      requires_T(std::is_base_of_v<U, T>)
     >
     static void increment(reference_count<U>* ptr) noexcept
     {
@@ -190,9 +182,7 @@ namespace stdx
     }
 
     template<typename U
-      requires_T(
-        std::is_base_of_v<U, T>
-      )
+      requires_T(std::is_base_of_v<U, T>)
     >
     static void decrement(reference_count<U>* ptr) noexcept
     {
@@ -204,9 +194,7 @@ namespace stdx
     }
 
     template<typename U
-      requires_T(
-        std::is_base_of_v<U, T>
-      )
+      requires_T(std::is_base_of_v<U, T>)
     >
     static typename reference_count<U>::size_type use_count(reference_count<U>* ptr) noexcept
     {
@@ -377,14 +365,12 @@ namespace stdx
      * \note not a part of proposal
      */
     template<typename U, typename UTraits
-      requires_T(
-        DerivedFrom_v<U, T>
-      )
+      requires_T(DerivedFrom_v<U, T>)
     >
     retain_ptr(const retain_ptr<U, UTraits>& other) noexcept
-      : m_ptr{ other.m_ptr }
+      : m_ptr{ other.get() }
     {
-      if (!other.m_ptr)
+      if (!other.get())
       {
         UTraits::increment(this->get());
       }
@@ -399,9 +385,7 @@ namespace stdx
      * \note not a part of proposal
      */
     template<typename U, typename UTraits
-      requires_T(
-        DerivedFrom_v<U, T>
-      )
+      requires_T(DerivedFrom_v<U, T>)
     >
     retain_ptr(retain_ptr<U, UTraits>&& other) noexcept
       : m_ptr{ other.release() }
@@ -430,7 +414,15 @@ namespace stdx
     {
       if (&other != this)
       {
-        retain_ptr(other).swap(*this);
+        if (*this)
+        {
+          traits_type::decrement(this->get());
+        }
+        this->m_ptr = other.get();
+        if (*this)
+        {
+          traits_type::increment(this->get());
+        }
       }
       return *this;
     }
@@ -444,17 +436,19 @@ namespace stdx
      * \note not a part of proposal
      */
     template<typename U, typename UTraits
-      requires_T(
-        DerivedFrom_v<U, T>
-      )
+      requires_T(DerivedFrom_v<U, T>)
     >
-    retain_ptr& operator=(const retain_ptr<U, Traits>& other) noexcept
+    retain_ptr& operator=(const retain_ptr<U, UTraits>& other) noexcept
     {
       if (*this)
       {
         traits_type::decrement(this->get());
       }
-      retain_ptr(other).swap(*this);
+      this->m_ptr = other.get();
+      if (*this)
+      {
+          traits_type::increment(this->get());
+      }
       return *this;
     }
 
@@ -463,7 +457,7 @@ namespace stdx
      * \param other a retain_ptr object from which ownership will be transferred
      * \return *this
      */
-    retain_ptr& operator= (retain_ptr&& other) noexcept
+    retain_ptr& operator=(retain_ptr&& other) noexcept
     {
       if (&other != this)
       {
@@ -481,9 +475,7 @@ namespace stdx
      * \note not a part of proposal
      */
     template<typename U, typename UTraits
-      requires_T(
-        DerivedFrom_v<U, T>
-      )
+      requires_T(DerivedFrom_v<U, T>)
     >
     retain_ptr& operator=(retain_ptr<U, UTraits>&& other) noexcept
     {
@@ -491,7 +483,7 @@ namespace stdx
       {
         traits_type::decrement(this->get());
       }
-      retain_ptr(std::move(other)).swap(*this);
+      this->m_ptr = other.release();
       return *this;
     }
 
@@ -885,7 +877,7 @@ namespace stdx
   {
     return os << ptr.get();
   }
-}
+} // end of namespace stdx
 
 namespace std
 {
@@ -908,6 +900,6 @@ namespace std
       return std::hash<typename stdx::retain_ptr<T, Traits>::pointer>{}(key.get());
     }
   };
-}
+} // end of namespace std
 
 #endif
