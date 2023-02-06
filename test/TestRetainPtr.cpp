@@ -1,7 +1,9 @@
 #include <memory.h>
 
-//  GTEST
 #include <gtest/gtest.h>
+
+#include <mutex>
+#include <thread>
 
 #ifdef _MSC_VER
 #include <Unknwn.h>
@@ -9,127 +11,214 @@
 
 namespace stdx::test
 {
-  //helper class to verify against the count of references
-  template<typename T>
-  struct instance_counter
+  struct Counter
   {
-    inline static long count_of_instances = 0L;
+    inline static long instances = 0L;
+  };
 
-    instance_counter()
+  //the class needs to derive from reference_count
+  template<typename C>
+  class Base : public stdx::reference_count<Base<C>>
+  {
+  public:
+    Base()
     {
-      ++count_of_instances;
+      ++C::instances;
     }
 
-    ~instance_counter()
+    virtual ~Base()
     {
-      --count_of_instances;
+      --C::instances;
     }
 
-    instance_counter(const instance_counter&)
+    Base(const Base&)
     {
-      ++count_of_instances;
+      ++C::instances;
     }
 
-    instance_counter(instance_counter&&) noexcept
+    Base(Base&&) noexcept
     {
     }
 
-    instance_counter& operator=(const instance_counter&)
+    Base& operator=(const Base&)
     {
-      ++count_of_instances;
+      ++C::instances;
       return *this;
     }
 
-    instance_counter& operator=(instance_counter&&) noexcept
+    Base& operator=(Base&&) noexcept
     {
       return *this;
     }
   };
 
-  //the class needs to derive from reference_counter
-  class Base : public stdx::reference_count<Base>, public instance_counter<Base>
-  {};
+  //the Base class is already derived from reference_count
+  template<typename C>
+  class Derived : public Base<C>
+  {
+  };
 
-  //the Base class is already derived from reference_counter
-  class Derived : public Base
-  {};
+  //the class needs to derive from atomic_reference_count
+  template<typename C>
+  struct ThreadSafeBase : stdx::atomic_reference_count<ThreadSafeBase<C>>
+  {
+    inline static long count_of_instances = 0L;
+    ThreadSafeBase()
+    {
+      ++C::instances;
+    }
 
-  //the class needs to derive from atomic_reference_counter
-  class ThreadSafeBase : public stdx::atomic_reference_count<ThreadSafeBase>, public instance_counter<ThreadSafeBase>
-  {};
+    virtual ~ThreadSafeBase()
+    {
+      --C::instances;
+    }
 
-  //the ThreadSafeBase class is already derived from reference_counter
-  class ThreadSafeDerived : public ThreadSafeBase
-  {};
+    ThreadSafeBase(const ThreadSafeBase&)
+    {
+      ++C::instances;
+    }
+
+    ThreadSafeBase(ThreadSafeBase&&) noexcept
+    {
+    }
+
+    ThreadSafeBase& operator=(const ThreadSafeBase&)
+    {
+      ++C::instances;
+      return *this;
+    }
+
+    ThreadSafeBase& operator=(ThreadSafeBase&&) noexcept
+    {
+      return *this;
+    }
+  };
+
+  //the ThreadSafeBase class is already derived from atomic_reference_count
+  template<typename C>
+  struct ThreadSafeDerived : ThreadSafeBase<C>
+  {
+  };
 
   template<typename T>
   class StdX_Memory_retain_ptr_test : public ::testing::Test
-  {
-  };
+    {
+    };
 
-  using test_types = ::testing::Types<Base, Derived, ThreadSafeBase, ThreadSafeDerived>;
+  using Base_Counted = Base<Counter>;
+  using Derived_Counted = Derived<Counter>;
+  using ThreadSafeBase_Counted = ThreadSafeBase<Counter>;
+  using ThreadSafeDerived_Counted = ThreadSafeDerived<Counter>;
 
-  TYPED_TEST_SUITE(StdX_Memory_retain_ptr_test, test_types,);
+  using test_typelist = ::testing::Types<Base_Counted, Derived_Counted, ThreadSafeBase_Counted, ThreadSafeDerived_Counted>;
+
+  TYPED_TEST_SUITE(StdX_Memory_retain_ptr_test, test_typelist, );
 
   TYPED_TEST(StdX_Memory_retain_ptr_test, basic_usage)
   {
+    Counter::instances = 0L;
     using T = TypeParam;
     using TPtr = stdx::retain_ptr<T>;
     {
       TPtr ptr(new T);
-      EXPECT_EQ(T::count_of_instances, 1);
+      EXPECT_EQ(Counter::instances, 1);
       EXPECT_EQ(ptr.use_count(), 1);
       {
         // copy construction
         TPtr ptr2{ ptr };
-        EXPECT_EQ(T::count_of_instances, 1);
+        EXPECT_EQ(Counter::instances, 1);
         EXPECT_EQ(ptr.use_count(), 2);
 
         // move construction
         TPtr ptr3{ std::move(ptr2) };
-        EXPECT_EQ(T::count_of_instances, 1);
+        EXPECT_EQ(Counter::instances, 1);
         EXPECT_EQ(ptr.use_count(), 2);
 
         // copy assignment
         TPtr ptr4;
         ptr4 = ptr3;
-        EXPECT_EQ(T::count_of_instances, 1);
+        EXPECT_EQ(Counter::instances, 1);
         EXPECT_EQ(ptr.use_count(), 3);
 
         // move assignment
         TPtr ptr5;
         ptr5 = std::move(ptr4);
-        EXPECT_EQ(T::count_of_instances, 1);
+        EXPECT_EQ(Counter::instances, 1);
         EXPECT_EQ(ptr.use_count(), 3);
       }
-      EXPECT_EQ(T::count_of_instances, 1);
+      EXPECT_EQ(Counter::instances, 1);
       EXPECT_EQ(ptr.use_count(), 1);
     }
-    EXPECT_EQ(T::count_of_instances, 0);
+    EXPECT_EQ(Counter::instances, 0);
   }
 
 #ifdef _MSC_VER
-  // just an example of defined traits on for WIN COM objects
-
-  interface ILookup : public IUnknown
+  // just an example of defined traits for WIN COM objects
+  struct ILookup : IUnknown
   {
-    virtual HRESULT _stdcall LookupByName(LPTSTR lpName, TCHAR **lplpNumber) = 0;
-    virtual HRESULT _stdcall LookupByNumber(LPTSTR lpNUmber, TCHAR **lplpName) = 0;
+    virtual HRESULT __stdcall LookupByName(LPTSTR lpName, TCHAR** lplpNumber) = 0;
+    virtual HRESULT __stdcall LookupByNumber(LPTSTR lpNUmber, TCHAR** lplpName) = 0;
+    virtual ~ILookup() = default;
   };
 
-  //the traits need to implement at least increment and decrement methods
+  struct CLookup : ILookup
+  {
+    ULONG m_resource{};
+
+    CLookup()
+      : m_resource(1U)
+    {
+    }
+
+    ULONG __stdcall AddRef() override
+    {
+      ++m_resource;
+      return m_resource;
+    }
+
+    ULONG __stdcall Release() override
+    {
+      --m_resource;
+      return m_resource;
+    }
+
+    HRESULT __stdcall QueryInterface(
+      REFIID,
+      _COM_Outptr_ void __RPC_FAR* __RPC_FAR*) override
+    {
+      return 0;
+    }
+
+    HRESULT __stdcall LookupByName(LPTSTR, TCHAR**) override
+    {
+      return 0;
+    }
+
+    HRESULT __stdcall LookupByNumber(LPTSTR, TCHAR**) override
+    {
+      return 0;
+    }
+  };
+
+  //the traits type needs to implement at least:
+  // - increment method
+  // - decrement methods
+  template<typename T>
   struct com_traits
   {
-    static void increment(IUnknown* ptr) { ptr->AddRef(); }
+    static void increment(IUnknown* ptr)
+    {
+      static_cast<T*>(ptr)->AddRef();
+    }
+
     static void decrement(IUnknown* ptr)
     {
-      // coverity[free] - Intentional
-      ptr->Release();
+      static_cast<T*>(ptr)->Release();
     }
   };
 
   template<typename T>
-  using com_ptr = stdx::retain_ptr<T, com_traits>;
+  using com_ptr = stdx::retain_ptr<T, com_traits<T>>;
 
   struct LookupResource
   {
@@ -139,13 +228,31 @@ namespace stdx::test
     }
 
     LookupResource() = default;
+    ILookup* operator->() noexcept
+    {
+      return this->m_resource.get();
+    }
 
-    ILookup* operator->() noexcept { return this->m_resource.get(); }
-    ILookup const* operator->() const noexcept { return this->m_resource.get(); }
+    ILookup const* operator->() const noexcept
+    {
+      return this->m_resource.get();
+    }
 
   protected:
-    com_ptr<ILookup> m_resource{};
+    com_ptr<ILookup> m_resource{ };
   };
+
+  TEST(StdX_Memory_retain_ptr, com_resource)
+  {
+    CLookup test_com{};
+    LookupResource resource(&test_com);
+    {
+      [[maybe_unused]] LookupResource resource1 = resource; // implicit increment
+      EXPECT_EQ(resource1->AddRef(), 3U); // explicit increment
+      EXPECT_EQ(resource->Release(), 2U); // explicit decrement
+    } // implicit decrement
+    EXPECT_EQ(test_com.m_resource, 1U);
+  }
 #endif
 
   struct TypeWithParam : stdx::reference_count<TypeWithParam>
@@ -160,8 +267,9 @@ namespace stdx::test
 
   TEST(StdX_Memory_retain_ptr, construct_with_adopt_object)
   {
-    Derived* p = new Derived();
-    stdx::retain_ptr<Derived> ip(p, stdx::adopt_object);
+    Counter::instances = 0L;
+    auto* p = new Derived_Counted();
+    stdx::retain_ptr<Derived_Counted> ip{ p, stdx::adopt_object };
     EXPECT_TRUE(ip);
     EXPECT_EQ(ip.use_count(), 1);
     EXPECT_EQ(ip.get(), p);
@@ -169,8 +277,9 @@ namespace stdx::test
 
   TEST(StdX_Memory_retain_ptr, construct_with_retain_object)
   {
-    auto up = std::make_unique<Derived>();
-    stdx::retain_ptr<Derived> ip(up.get(), stdx::retain_object);
+    Counter::instances = 0L;
+    auto up = std::make_unique<Derived_Counted>();
+    stdx::retain_ptr<Derived_Counted> ip(up.get(), stdx::retain_object);
     EXPECT_TRUE(ip);
     EXPECT_EQ(ip.use_count(), 2);
     EXPECT_EQ(ip.get(), up.get());
@@ -178,14 +287,15 @@ namespace stdx::test
 
   TEST(StdX_Memory_retain_ptr, hash)
   {
-    Derived* p = new Derived();
-    stdx::retain_ptr<Derived> ip(p);
-    EXPECT_EQ(std::hash<stdx::retain_ptr<Derived>>()(ip), std::hash<Derived*>()(p));
+    Counter::instances = 0L;
+    Derived_Counted* p = new Derived_Counted();
+    stdx::retain_ptr<Derived_Counted> ip(p);
+    EXPECT_EQ(std::hash<stdx::retain_ptr<Derived_Counted>>()(ip), std::hash<Derived_Counted*>()(p));
   }
 
   TEST(StdX_Memory_retain_ptr, swap)
   {
-    using Ptr = Derived;
+    using Ptr = Derived_Counted;
     using TPtr = stdx::retain_ptr<Ptr>;
     TPtr rp1(new Ptr);
     TPtr rp2(new Ptr);
@@ -205,7 +315,7 @@ namespace stdx::test
 
   TEST(StdX_Memory_retain_ptr, bool_converting_operator)
   {
-    using Ptr = Derived;
+    using Ptr = Derived_Counted;
     using TPtr = stdx::retain_ptr<Ptr>;
     TPtr rp1;
     TPtr rp2(new Ptr);
@@ -216,7 +326,7 @@ namespace stdx::test
 
   TEST(StdX_Memory_retain_ptr, release)
   {
-    using Ptr = Derived;
+    using Ptr = Derived_Counted;
     using TPtr = stdx::retain_ptr<Ptr>;
     auto* p = new Ptr;
     TPtr rp1(p);
@@ -264,14 +374,12 @@ namespace stdx::test
 
   struct MyBase : stdx::reference_count<MyBase>
   {
-    MyBase()
-    {
-      //std::cout << __FUNCTION__ << std::endl;
-    }
-    virtual ~MyBase()
-    {
-      //std::cout << __FUNCTION__ << std::endl;
-    }
+    MyBase() = default;
+    MyBase(const MyBase&) = default;
+    MyBase(MyBase&&) = default;
+    MyBase& operator=(const MyBase&) = default;
+    MyBase& operator=(MyBase&&) = default;
+    virtual ~MyBase() = default;
   };
 
   struct MySub : MyBase
@@ -280,13 +388,13 @@ namespace stdx::test
       : MyBase()
       , m_x(x)
     {
-      //std::cout << __FUNCTION__ << std::endl;
     }
 
-    ~MySub() override
-    {
-      //std::cout << __FUNCTION__ << std::endl;
-    }
+    MySub(const MySub&) = default;
+    MySub(MySub&&) = default;
+    MySub& operator=(const MySub&) = default;
+    MySub& operator=(MySub&&) = default;
+    ~MySub() override = default;
 
     int m_x;
   };
@@ -334,10 +442,37 @@ namespace stdx::test
 
       sub1 = std::move(sub2);  // move-assignment
       EXPECT_TRUE(sub1);
-      EXPECT_FALSE(sub2);
+      // coverity[use_after_move] - Intentional
+      EXPECT_FALSE(sub2); // NOLINT(bugprone-use-after-move)
       EXPECT_EQ(sub1.use_count(), 1);
       EXPECT_EQ(sub2.use_count(), 0);
     }
+  }
+
+  TEST(StdX_Memory_retain_ptr, test_retain_copy_construct_from_lvalue)
+  {
+    auto sub = RetainSub(new MySub(42));
+    EXPECT_TRUE(sub);
+    EXPECT_EQ(sub.use_count(), 1);
+    {
+      auto base = RetainBase(sub);
+      EXPECT_TRUE(base);
+      EXPECT_EQ(sub.use_count(), 2);
+      EXPECT_EQ(base.use_count(), 2);
+    }
+    EXPECT_EQ(sub.use_count(), 1);
+  }
+
+  TEST(StdX_Memory_retain_ptr, test_retain_move_construct_from_rvalue)
+  {
+    auto sub = RetainSub(new MySub(42));
+    EXPECT_TRUE(sub);
+    EXPECT_EQ(sub.use_count(), 1);
+    auto base = RetainBase(std::move(sub));
+    EXPECT_TRUE(base);
+    // coverity[use_after_move] - Intentional
+    EXPECT_EQ(sub.use_count(), 0);  // NOLINT(bugprone-use-after-move)
+    EXPECT_EQ(base.use_count(), 1);
   }
 
   TEST(StdX_Memory_retain_ptr, test_retain_assign_from_lvalue)
@@ -346,24 +481,32 @@ namespace stdx::test
       auto base = RetainBase(new MyBase());
       EXPECT_TRUE(base);
       EXPECT_EQ(base.use_count(), 1);
-      const auto sub = RetainSub(new MySub(42));
-      EXPECT_TRUE(sub);
-      EXPECT_EQ(sub.use_count(), 1);
-      base = sub; //copy-assignment
-      EXPECT_EQ(base.use_count(), 2);
-      EXPECT_EQ(sub.use_count(), 2);
+      {
+        const auto sub = RetainSub(new MySub(42));
+        EXPECT_TRUE(sub);
+        EXPECT_EQ(sub.use_count(), 1);
+        EXPECT_NE(base.get(), sub.get());
+        base = sub; //copy-assignment
+        EXPECT_EQ(base.use_count(), 2);
+        EXPECT_EQ(sub.use_count(), 2);
+        EXPECT_EQ(base.get(), sub.get());
+      }
     }
 
     {
       auto sub1 = RetainSub(new MySub(24));
       EXPECT_TRUE(sub1);
       EXPECT_EQ(sub1.use_count(), 1);
-      auto sub2 = RetainSub(new MySub(42));
-      EXPECT_TRUE(sub2);
-      EXPECT_EQ(sub2.use_count(), 1);
-      sub1 = sub2; //copy-assignment
-      EXPECT_EQ(sub1.use_count(), 2);
-      EXPECT_EQ(sub2.use_count(), 2);
+      {
+        const auto sub2 = RetainSub(new MySub(42));
+        EXPECT_TRUE(sub2);
+        EXPECT_EQ(sub2.use_count(), 1);
+        EXPECT_NE(sub1.get(), sub2.get());
+        sub1 = sub2; //copy-assignment
+        EXPECT_EQ(sub1.use_count(), 2);
+        EXPECT_EQ(sub2.use_count(), 2);
+        EXPECT_EQ(sub1.get(), sub2.get());
+      }
     }
   }
 
@@ -386,7 +529,7 @@ namespace stdx::test
       EXPECT_TRUE(rp);
       EXPECT_EQ(rp.use_count(), 1);
 
-      auto sp = stdx::dynamic_pointer_cast<MySub>(rp);
+      auto sp = stdx::dynamic_pointer_cast<MySub, stdx::retain_traits<MySub>>(rp);
       EXPECT_TRUE(rp);
       EXPECT_EQ(rp.use_count(), 2);
       EXPECT_TRUE(sp);
@@ -394,7 +537,7 @@ namespace stdx::test
     }
 
     {
-      auto sp = stdx::dynamic_pointer_cast<MySub>(func_return_subclass());
+      auto sp = stdx::dynamic_pointer_cast<MySub, stdx::retain_traits<MySub>>(func_return_subclass());
       EXPECT_TRUE(sp);
       EXPECT_EQ(sp.use_count(), 1);
       EXPECT_EQ(sp->m_x, 42);
@@ -408,8 +551,9 @@ namespace stdx::test
       EXPECT_TRUE(sp);
       EXPECT_EQ(sp.use_count(), 1);
 
-      auto bp = stdx::static_pointer_cast<MyBase>(sp);
+      auto bp = stdx::static_pointer_cast<MyBase, stdx::retain_traits<MyBase>>(sp);
       EXPECT_TRUE(bp);
+      EXPECT_TRUE(sp);
       EXPECT_EQ(bp.use_count(), 2);
       EXPECT_EQ(sp.use_count(), 2);
     }
@@ -419,10 +563,62 @@ namespace stdx::test
       EXPECT_TRUE(sp);
       EXPECT_EQ(sp.use_count(), 1);
 
-      auto bp = stdx::static_pointer_cast<MyBase>(std::move(sp));
-      EXPECT_FALSE(sp);
+      auto bp = stdx::static_pointer_cast<MyBase, stdx::retain_traits<MyBase>>(std::move(sp));
       EXPECT_TRUE(bp);
+      // coverity[use_after_move] - Intentional
+      EXPECT_FALSE(sp);  // NOLINT(bugprone-use-after-move)
       EXPECT_EQ(bp.use_count(), 1);
     }
+  }
+
+  struct BaseTS : stdx::atomic_reference_count<BaseTS>
+  {
+    BaseTS() = default;
+    // Note: non-virtual destructor is OK here
+     ~BaseTS() = default;
+  };
+
+  struct DerivedTS : BaseTS
+  {
+    DerivedTS() = default;
+    ~DerivedTS() = default;
+  };
+
+  TEST(StdX_Memory_retain_ptr, thread_safety)
+  {
+    using namespace std::chrono_literals;
+    auto thr = [](stdx::retain_ptr<BaseTS> p, std::intptr_t addr) {
+      std::this_thread::sleep_for(1s);
+      auto count = p.use_count();
+      EXPECT_TRUE(count > 0) << count;
+      {
+        const stdx::retain_ptr<BaseTS> lp = p;
+        count = lp.use_count();
+        EXPECT_EQ(addr, reinterpret_cast<std::intptr_t>(lp.get()));
+        EXPECT_TRUE(count > 0) << count;
+        // shared use_count is incremented
+        {
+          static std::mutex io_mutex;
+          std::lock_guard lk(io_mutex);
+          std::cout << "local pointer in a thread(" << std::this_thread::get_id() << "): \n"
+            << "  lp.get() = " << lp.get()
+            << ", lp.use_count() = " << lp.use_count() << '\n';
+        }
+      }
+    };
+
+    // created a retain DerivedTS (as a pointer to BaseTS)
+    stdx::retain_ptr<BaseTS> p = stdx::make_retain<DerivedTS>();
+
+    ASSERT_TRUE(p);
+    EXPECT_EQ(p.use_count(), 1);
+    std::thread t1(thr, p, reinterpret_cast<std::intptr_t>(p.get()));
+    std::thread t2(thr, p, reinterpret_cast<std::intptr_t>(p.get()));
+    std::thread t3(thr, p, reinterpret_cast<std::intptr_t>(p.get()));
+    p.reset(); // release ownership from the main thread
+    ASSERT_FALSE(p);
+    EXPECT_EQ(p.use_count(), 0);
+    t1.join(); t2.join(); t3.join();
+    // All threads completed, the last one deleted DerivedTS
   }
 } // end of namespace stdx::test
