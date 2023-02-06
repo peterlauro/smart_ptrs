@@ -119,6 +119,48 @@ namespace stdx
 
   template<typename From, typename To>
   inline constexpr bool is_nothrow_convertible_v = is_nothrow_convertible<From, To>::value;
+
+  /**
+   * \brief if T is an integral type but it's not [char, char16_t, char32_t, wchar_t, bool] type or any of cv-qualified version thereof,
+   *        provides the member constant value equal to true. For any other type, value is false.
+   * \tparam T a type to check
+   */
+  template<typename T>
+  using is_standard_integer = std::conjunction<
+      std::is_integral<T>,
+      std::negation<std::is_same<std::remove_cv_t<T>, char>>,
+#if __cplusplus >= 202002L
+      std::negation<std::is_same<std::remove_cv_t<T>, char8_t>>,
+#endif
+      std::negation<std::is_same<std::remove_cv_t<T>, char16_t>>,
+      std::negation<std::is_same<std::remove_cv_t<T>, char32_t>>,
+      std::negation<std::is_same<std::remove_cv_t<T>, wchar_t>>,
+      std::negation<std::is_same<std::remove_cv_t<T>, bool>>
+  >;
+
+  /**
+   * \brief helper variable template
+   */
+  template<typename T>
+  inline constexpr bool is_standard_integer_v = is_standard_integer<T>::value;
+
+  /**
+   * \brief if T is a standard_integer type or a floating-point type or any of cv-qualified version thereof,
+   *        provides the member constant value equal to true. For any other type, value is false.
+   * \tparam T a type to check
+   * \note Arithmetic types are the built-in types for which the arithmetic operators (+, -, *, /) are defined.
+   */
+  template<typename T>
+  using is_standard_arithmetic = std::disjunction<
+      std::is_floating_point<T>,
+      is_standard_integer<T>
+  >;
+
+  /**
+   * \brief helper variable template
+   */
+  template<typename T>
+  inline constexpr bool is_standard_arithmetic_v = is_standard_arithmetic<T>::value;
 }
 
 #endif

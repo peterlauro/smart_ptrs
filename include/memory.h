@@ -143,6 +143,7 @@ namespace stdx
   struct retain_traits final
   {
     using element_type = T;
+    using default_action = adopt_object_t;
 
     template<typename U
       requires_T(std::is_base_of_v<U, T>)
@@ -157,10 +158,12 @@ namespace stdx
     >
     static void decrement(atomic_reference_count<U>* ptr) noexcept
     {
-      ptr->m_count.fetch_sub(1, std::memory_order_acq_rel);
-      if (use_count(ptr) == 0)
+      // gcc 12.1 complains about dereferencing a deleted ptr
+      // the static cast to T* is required before the first ptr->
+      auto t_ptr = static_cast<T*>(ptr);
+      if (ptr->m_count.fetch_sub(1, std::memory_order_acq_rel) == 1)
       {
-        delete static_cast<T*>(ptr);
+        delete t_ptr;
       }
     }
 
@@ -168,7 +171,7 @@ namespace stdx
       requires_T(std::is_base_of_v<U, T>)
     >
     [[nodiscard]]
-    static typename atomic_reference_count<U>::size_type use_count(atomic_reference_count<U>* ptr) noexcept
+    static typename atomic_reference_count<U>::size_type use_count(const atomic_reference_count<U>* ptr) noexcept
     {
       return ptr->m_count.load(std::memory_order_relaxed);
     }
@@ -186,17 +189,19 @@ namespace stdx
     >
     static void decrement(reference_count<U>* ptr) noexcept
     {
-      --ptr->m_count;
-      if (use_count(ptr) == 0)
+      // gcc 12.1 complains about dereferencing a deleted ptr
+      // the static cast to T* is required before the first ptr->
+      auto t_ptr = static_cast<T*>(ptr);
+      if (--ptr->m_count == 0)
       {
-        delete static_cast<T*>(ptr);
+        delete t_ptr;
       }
     }
 
     template<typename U
       requires_T(std::is_base_of_v<U, T>)
     >
-    static typename reference_count<U>::size_type use_count(reference_count<U>* ptr) noexcept
+    static typename reference_count<U>::size_type use_count(const reference_count<U>* ptr) noexcept
     {
       return ptr->m_count;
     }
@@ -215,6 +220,7 @@ namespace stdx
    *        The type retain_ptr<T, Traits>::pointer shall satisfy the requirements of NullablePointer.use_count
    * \tparam T the type of the object managed by this
    * \tparam Traits the traits suitable for type T
+   * \note The retain_ptr provides the same level of thread-safety as std::shared_ptr https://en.cppreference.com/w/cpp/memory/shared_ptr
    */
   template<typename T, typename Traits = retain_traits<T>>
   struct retain_ptr
@@ -229,19 +235,30 @@ namespace stdx
 
   private:
     using default_action = detected_or_t<
-      adopt_object_t, detail::has_default_action, traits_type>;
+      adopt_object_t,
+      detail::has_default_action,
+      traits_type>;
 
     static constexpr auto has_use_count_v = is_detected<
-      detail::has_use_count, traits_type, pointer>{};
+      detail::has_use_count,
+      traits_type,
+      pointer>{};
 
     static constexpr auto has_increment_v = is_detected<
-      detail::has_increment, traits_type, pointer>{};
+      detail::has_increment,
+      traits_type,
+      pointer>{};
 
     static constexpr auto has_decrement_v = is_detected<
-      detail::has_decrement, traits_type, pointer>{};
+      detail::has_decrement,
+      traits_type,
+      pointer>{};
 
     using size_type = detected_or_t<
-      ptrdiff_t, detail::has_use_count, traits_type, pointer>;
+      ptrdiff_t,
+      detail::has_use_count,
+      traits_type,
+      pointer>;
 
     static_assert(
       std::is_same_v<default_action, adopt_object_t> || std::is_same_v<default_action, retain_object_t>,
@@ -265,28 +282,28 @@ namespace stdx
     retain_ptr() noexcept = default;
 
     /**
+     * \brief Constructs a retain_ptr that adopts p, initializing the stored pointer with p.
+     * \param p a pointer to an object to manage
+    * \note p's reference count remains untouched.
+    */
+    retain_ptr(pointer p, adopt_object_t) noexcept
+      : m_ptr(p)
+    {
+    }
+
+    /**
      * \brief Constructs a retain_ptr that retains p, initializing the stored pointer with p,
      *        and increments the reference count of p if p != nullptr by way of traits_type::increment.
      * \param p a pointer to an object to manage
      * \note If an exception is thrown during increment, this constructor will have no effect.
      */
     retain_ptr(pointer p, retain_object_t)
-      : retain_ptr{ p, adopt_object }
+      : retain_ptr(p, adopt_object)
     {
       if (*this)
       {
         traits_type::increment(this->get());
       }
-    }
-
-    /**
-     * \brief Constructs a retain_ptr that adopts p, initializing the stored pointer with p.
-     * \param p a pointer to an object to manage
-     * \note p's reference count remains untouched.
-     */
-    retain_ptr(pointer p, adopt_object_t) noexcept
-      : m_ptr(p)
-    {
     }
 
     /**
@@ -297,39 +314,8 @@ namespace stdx
      * \param p a pointer to an object to manage
      */
     explicit retain_ptr(pointer p)
-      : retain_ptr{p, default_action()}
+      : retain_ptr(p, default_action())
     {
-    }
-
-    /**
-     * \brief aliasing copy constructor
-     * \tparam U the type which pointer type is "compatible" to T*
-     * \param r another smart pointer to share the ownership
-     * \param p a pointer to an object to manage
-     * \note not a part of proposal
-     */
-    template<typename U>
-    retain_ptr(const retain_ptr<U, traits_type>& r, pointer p) noexcept
-      : m_ptr(p)
-    {
-      if (r)
-      {
-        traits_type::increment(r.get());
-      }
-    }
-
-    /**
-     * \brief aliasing move constructor
-     * \tparam U the type which pointer type is "compatible" to T*
-     * \param r another retain pointer to acquire the ownership from
-     * \param p a pointer to an object to manage
-     * \note not a part of proposal
-     */
-    template<typename U>
-    retain_ptr(retain_ptr<U, Traits>&& r, pointer p) noexcept
-      : m_ptr(p)
-    {
-      static_cast<void>(r.release());
     }
 
     /**
@@ -365,14 +351,14 @@ namespace stdx
      * \note not a part of proposal
      */
     template<typename U, typename UTraits
-      requires_T(DerivedFrom_v<U, T>)
+        requires_T(DerivedFrom_v<U, T>)
     >
     retain_ptr(const retain_ptr<U, UTraits>& other) noexcept
-      : m_ptr{ other.get() }
+      : m_ptr(other.get())
     {
-      if (!other.get())
+      if (other)
       {
-        UTraits::increment(this->get());
+        UTraits::increment(other.get());
       }
     }
 
@@ -385,10 +371,10 @@ namespace stdx
      * \note not a part of proposal
      */
     template<typename U, typename UTraits
-      requires_T(DerivedFrom_v<U, T>)
+        requires_T(DerivedFrom_v<U, T>)
     >
     retain_ptr(retain_ptr<U, UTraits>&& other) noexcept
-      : m_ptr{ other.release() }
+        : m_ptr(other.release())
     {
     }
 
@@ -396,7 +382,7 @@ namespace stdx
      * \brief Constructs a retain_ptr object that retains nothing, value-initializing the stored pointer.
      */
     retain_ptr(std::nullptr_t) noexcept
-      : retain_ptr{}
+      : retain_ptr()
     {
     }
 
@@ -410,19 +396,19 @@ namespace stdx
      * \param other a retain_ptr object from which ownership will be transferred
      * \return *this
      */
-    retain_ptr& operator=(const retain_ptr& other) noexcept
+    retain_ptr& operator=(const retain_ptr& other)
     {
       if (&other != this)
       {
+        if (other)
+        {
+          traits_type::increment(other.get());
+        }
         if (*this)
         {
           traits_type::decrement(this->get());
         }
         this->m_ptr = other.get();
-        if (*this)
-        {
-          traits_type::increment(this->get());
-        }
       }
       return *this;
     }
@@ -438,17 +424,18 @@ namespace stdx
     template<typename U, typename UTraits
       requires_T(DerivedFrom_v<U, T>)
     >
-    retain_ptr& operator=(const retain_ptr<U, UTraits>& other) noexcept
+    retain_ptr& operator=(const retain_ptr<U, UTraits>& other)
     {
+      if (other)
+      {
+        traits_type::increment(other.get());
+      }
       if (*this)
       {
         traits_type::decrement(this->get());
       }
       this->m_ptr = other.get();
-      if (*this)
-      {
-          traits_type::increment(this->get());
-      }
+
       return *this;
     }
 
@@ -493,7 +480,7 @@ namespace stdx
      */
     retain_ptr& operator=(std::nullptr_t) noexcept
     {
-      reset();
+      this->reset();
       return *this;
     }
 
@@ -524,7 +511,7 @@ namespace stdx
      */
     element_type& operator*() const noexcept
     {
-      return *this->get();
+      return *(this->get());
     }
 
     /**
@@ -545,7 +532,7 @@ namespace stdx
     [[nodiscard]]
     pointer get() const noexcept
     {
-      return m_ptr;
+      return this->m_ptr;
     }
 
     /**
@@ -562,6 +549,7 @@ namespace stdx
     /**
      * \brief Checks whether *this owns an object, i.e. whether get() != nullptr
      */
+    [[nodiscard]]
     explicit operator bool() const noexcept
     {
       return this->get() != nullptr;
@@ -574,15 +562,15 @@ namespace stdx
      *          count - otherwise
      */
     [[nodiscard]]
-    auto use_count() const noexcept
+    std::ptrdiff_t use_count() const noexcept
     {
       if constexpr (has_use_count_v)
       {
-        return this->get() ? traits_type::use_count(this->get()) : size_type{ 0 };
+        return *this ? clamp_cast<std::ptrdiff_t>(traits_type::use_count(this->get())) : std::ptrdiff_t{ 0 };
       }
       else
       {
-        return size_type{ -1 };
+        return std::ptrdiff_t{ -1 };
       }
     }
 
@@ -594,7 +582,7 @@ namespace stdx
     [[nodiscard]]
     pointer release() noexcept
     {
-      auto* ptr = m_ptr;
+      auto* ptr = this->get();
       this->m_ptr = pointer{};
       return ptr;
     }
@@ -606,7 +594,7 @@ namespace stdx
      *       old_p, was not equal to nullptr, calls traits_type::decrement.
      *       Then if p is not equal to nullptr, traits_type::increment is called.
      */
-    void reset(pointer p, retain_object_t) noexcept
+    void reset(pointer p, retain_object_t)
     {
       *this = retain_ptr(p, retain_object);
     }
@@ -639,7 +627,7 @@ namespace stdx
     void swap(retain_ptr& other) noexcept
     {
       using std::swap;
-      swap(this->m_ptr, other.m_ptr);
+      swap(m_ptr, other.m_ptr);
     }
 
   private:
@@ -653,182 +641,194 @@ namespace stdx
     lhs.swap(rhs);
   }
 
-  template<typename T, typename Traits, typename U>
+  template<typename T, typename Traits, typename U, typename UTraits>
   [[nodiscard]]
-  retain_ptr<T, Traits> static_pointer_cast(const retain_ptr<U, Traits>& r) noexcept
+  retain_ptr<T, Traits> static_pointer_cast(const retain_ptr<U, UTraits>& other) noexcept
   {
-    using rp_type = retain_ptr<T, Traits>;
-    return rp_type(r, static_cast<typename rp_type::pointer>(r.get()));
+    const auto ptr = static_cast<typename retain_ptr<T, Traits>::pointer>(other.get());
+    return retain_ptr<T, Traits>(ptr, retain_object);
   }
 
-  template<typename T, typename Traits, typename U>
+  template<typename T, typename Traits, typename U, typename UTraits>
   [[nodiscard]]
-  retain_ptr<T, Traits> static_pointer_cast(retain_ptr<U, Traits>&& r) noexcept
+  retain_ptr<T, Traits> static_pointer_cast(retain_ptr<U, UTraits>&& other) noexcept
   {
-    using rp_type = retain_ptr<T, Traits>;
-    return rp_type(std::move(r), static_cast<typename rp_type::pointer>(r.get()));
+    return retain_ptr<T, Traits>(static_cast<typename retain_ptr<T, Traits>::pointer>(other.release()));
   }
 
-  template<typename T, typename Traits, typename U>
+  template<typename T, typename Traits, typename U, typename UTraits>
   [[nodiscard]]
-  retain_ptr<T, Traits> const_pointer_cast(const retain_ptr<U, Traits>& r) noexcept
+  retain_ptr<T, Traits> const_pointer_cast(const retain_ptr<U, UTraits>& other) noexcept
   {
-    using rp_type = retain_ptr<T, Traits>;
-    return rp_type(r, const_cast<typename rp_type::pointer>(r.get()));
+    const auto ptr = const_cast<typename retain_ptr<T, Traits>::pointer>(other.get());
+    return retain_ptr<T, Traits>(ptr, retain_object);
   }
 
-  template<typename T, typename Traits, typename U>
+  template<typename T, typename Traits, typename U, typename UTraits>
   [[nodiscard]]
-  retain_ptr<T, Traits> const_pointer_cast(retain_ptr<U, Traits>&& r) noexcept
+  retain_ptr<T, Traits> const_pointer_cast(retain_ptr<U, UTraits>&& other) noexcept
   {
-    using rp_type = retain_ptr<T, Traits>;
-    return rp_type(std::move(r), const_cast<typename rp_type::pointer>(r.get()));
+    return retain_ptr<T, Traits>(const_cast<typename retain_ptr<T, Traits>::pointer>(other.release()));
   }
 
-  template<typename T, typename Traits, typename U>
+  template<typename T, typename Traits, typename U, typename UTraits>
   [[nodiscard]]
-  retain_ptr<T, Traits> dynamic_pointer_cast(const retain_ptr<U, Traits>& r) noexcept
+  retain_ptr<T, Traits> dynamic_pointer_cast(const retain_ptr<U, UTraits>& other) noexcept
   {
-    using rp_type = retain_ptr<T, Traits>;
-    if (auto* p = dynamic_cast<typename rp_type::pointer>(r.get()))
+    if (const auto ptr = dynamic_cast<typename retain_ptr<T, Traits>::pointer>(other.get()); ptr)
     {
-      return rp_type(r, p);
+      return retain_ptr<T, Traits>(ptr, retain_object);
     }
-    return rp_type{};
+    return {};
   }
 
-  template<typename T, typename Traits, typename U>
+  template<typename T, typename Traits, typename U, typename UTraits>
   [[nodiscard]]
-  retain_ptr<T, Traits> dynamic_pointer_cast(retain_ptr<U, Traits>&& r) noexcept
+  retain_ptr<T, Traits> dynamic_pointer_cast(retain_ptr<U, UTraits>&& other) noexcept
   {
-    using rp_type = retain_ptr<T, Traits>;
-    if (auto* p = dynamic_cast<typename rp_type::pointer>(r.get()))
+    if (const auto ptr = dynamic_cast<typename retain_ptr<T, Traits>::pointer>(other.release()); ptr)
     {
-      return rp_type(std::move(r), p);
+      return retain_ptr<T, Traits>(ptr);
     }
-    return rp_type{};
+    return {};
   }
 
-  template<class T, class Traits, class U>
+  template<typename T, typename Traits, typename U, typename UTraits>
   [[nodiscard]]
-  retain_ptr<T, Traits> reinterpret_pointer_cast(const retain_ptr<U, Traits>& r) noexcept
+  retain_ptr<T, Traits> reinterpret_pointer_cast(const retain_ptr<U, UTraits>& other) noexcept
   {
-    using rp_type = retain_ptr<T, Traits>;
-    return rp_type(r, reinterpret_cast<typename rp_type::pointer>(r.get()));
+    const auto ptr = reinterpret_cast<typename retain_ptr<T, Traits>::pointer>(other.get());
+    return retain_ptr<T, Traits>(ptr, retain_object);
   }
 
-  template<class T, class Traits, class U>
+  template<typename T, typename Traits, typename U, typename UTraits>
   [[nodiscard]]
-  retain_ptr<T, Traits> reinterpret_pointer_cast(retain_ptr<U, Traits>&& r) noexcept
+  retain_ptr<T, Traits> reinterpret_pointer_cast(retain_ptr<U, UTraits>&& other) noexcept
   {
-    using rp_type = retain_ptr<T, Traits>;
-    return rp_type(std::move(r), reinterpret_cast<typename rp_type::pointer>(r.get()));
+    return retain_ptr<T, Traits>(reinterpret_cast<typename retain_ptr<T, Traits>::pointer>(other.release()));
   }
 
-
-  template<typename T, typename Traits>
-  bool operator==(const retain_ptr<T, Traits>& x, const retain_ptr<T, Traits>& y) noexcept
+  template<typename T, typename Traits, typename U, typename UTraits>
+  [[nodiscard]]
+  bool operator==(const retain_ptr<T, Traits>& x, const retain_ptr<U, UTraits>& y) noexcept
   {
     return x.get() == y.get();
   }
 
-  template<typename T, typename Traits>
-  bool operator!=(const retain_ptr<T, Traits>& x, const retain_ptr<T, Traits>& y) noexcept
+  template<typename T, typename Traits, typename U, typename UTraits>
+  [[nodiscard]]
+  bool operator!=(const retain_ptr<T, Traits>& x, const retain_ptr<U, UTraits>& y) noexcept
   {
     return x.get() != y.get();
   }
 
-  template<typename T, typename Traits>
-  bool operator<(const retain_ptr<T, Traits>& x, const retain_ptr<T, Traits>& y) noexcept
+  template<typename T, typename Traits, typename U, typename UTraits>
+  [[nodiscard]]
+  bool operator<(const retain_ptr<T, Traits>& x, const retain_ptr<U, UTraits>& y) noexcept
   {
     return std::less<>()(x.get(), y.get());
   }
 
-  template<typename T, typename Traits>
-  bool operator<=(const retain_ptr<T, Traits>& x, const retain_ptr<T, Traits>& y) noexcept
+  template<typename T, typename Traits, typename U, typename UTraits>
+  [[nodiscard]]
+  bool operator<=(const retain_ptr<T, Traits>& x, const retain_ptr<U, UTraits>& y) noexcept
   {
     return !(y < x);
   }
 
-  template<typename T, typename Traits>
-  bool operator>(const retain_ptr<T, Traits>& x, const retain_ptr<T, Traits>& y) noexcept
+  template<typename T, typename Traits, typename U, typename UTraits>
+  [[nodiscard]]
+  bool operator>(const retain_ptr<T, Traits>& x, const retain_ptr<U, UTraits>& y) noexcept
   {
     return y < x;
   }
 
-  template<typename T, typename Traits>
-  bool operator>=(const retain_ptr<T, Traits>& x, const retain_ptr<T, Traits>& y) noexcept
+  template<typename T, typename Traits, typename U, typename UTraits>
+  [[nodiscard]]
+  bool operator>=(const retain_ptr<T, Traits>& x, const retain_ptr<U, UTraits>& y) noexcept
   {
     return !(x < y);
   }
 
   template<typename T, typename Traits>
+  [[nodiscard]]
   bool operator==(const retain_ptr<T, Traits>& x, std::nullptr_t) noexcept
   {
     return !x;
   }
 
   template<typename T, typename Traits>
+  [[nodiscard]]
   bool operator==(std::nullptr_t, const retain_ptr<T, Traits>& y) noexcept
   {
     return !y;
   }
 
   template<typename T, typename Traits>
+  [[nodiscard]]
   bool operator!=(const retain_ptr<T, Traits>& x, std::nullptr_t) noexcept
   {
     return static_cast<bool>(x);
   }
 
   template<typename T, typename Traits>
+  [[nodiscard]]
   bool operator!=(std::nullptr_t, const retain_ptr<T, Traits>& y) noexcept
   {
     return static_cast<bool>(y);
   }
 
   template<typename T, typename Traits>
+  [[nodiscard]]
   bool operator<(const retain_ptr<T, Traits>& x, std::nullptr_t) noexcept
   {
     return std::less<typename retain_ptr<T, Traits>::pointer>()(x.get(), nullptr);
   }
 
   template<typename T, typename Traits>
+  [[nodiscard]]
   bool operator<(std::nullptr_t, const retain_ptr<T, Traits>& y) noexcept
   {
     return std::less<typename retain_ptr<T, Traits>::pointer>()(nullptr, y.get());
   }
 
   template<typename T, typename Traits>
+  [[nodiscard]]
   bool operator<=(const retain_ptr<T, Traits>& x, std::nullptr_t) noexcept
   {
     return !(nullptr < x);
   }
 
   template<typename T, typename Traits>
+  [[nodiscard]]
   bool operator<=(std::nullptr_t, const retain_ptr<T, Traits>& y) noexcept
   {
     return !(y < nullptr);
   }
 
   template<typename T, typename Traits>
+  [[nodiscard]]
   bool operator>(const retain_ptr<T, Traits>& x, std::nullptr_t) noexcept
   {
     return nullptr < x;
   }
 
   template<typename T, typename Traits>
+  [[nodiscard]]
   bool operator>(std::nullptr_t, const retain_ptr<T, Traits>& y) noexcept
   {
     return y < nullptr;
   }
 
   template<typename T, typename Traits>
+  [[nodiscard]]
   bool operator>=(const retain_ptr<T, Traits>& x, std::nullptr_t) noexcept
   {
     return !(x < nullptr);
   }
 
   template<typename T, typename Traits>
+  [[nodiscard]]
   bool operator>=(std::nullptr_t, const retain_ptr<T, Traits>& y) noexcept
   {
     return !(nullptr < y);
@@ -891,10 +891,9 @@ namespace std
   struct hash<stdx::retain_ptr<T, Traits>>
     : stdx::detail::conditionally_enabled_hash<
       stdx::retain_ptr<T, Traits>,
-      std::is_default_constructible_v<std::hash<typename stdx::retain_ptr<T, Traits>::pointer>>
-    >
+      std::is_default_constructible_v<std::hash<typename stdx::retain_ptr<T, Traits>::pointer>>>
   {
-    static size_t do_hash(const stdx::retain_ptr<T, Traits>& key)
+    std::size_t operator()(const stdx::retain_ptr<T, Traits>& key)
     noexcept(stdx::detail::is_nothrow_hashable_v<typename stdx::retain_ptr<T, Traits>::pointer>)
     {
       return std::hash<typename stdx::retain_ptr<T, Traits>::pointer>{}(key.get());
