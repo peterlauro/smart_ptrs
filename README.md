@@ -1,10 +1,10 @@
 # smart_ptrs
 
 -  retain_ptr - An Intrusive Smart Pointer based on the proposal [P0468R1](http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p0468r1.html) and the [reference implementation](https://github.com/bruxisma/retain-ptr)
--  added support of polymorphic types - retain_ptr on base type taking a pointer on child type
+-  added support of polymorphic types (pointer aliasing)
 -  partially mimic the API of std::shared_ptr
 
-  retain_ptr<T, Traits>
+## retain_ptr<T, Traits>
   A retain pointer is an object that extends the lifetime of another object
   (which in turn manages its own disposition) and manages that other object
   through a pointer. Specifically, a retain pointer is an object `r` that stores
