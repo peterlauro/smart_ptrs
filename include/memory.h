@@ -893,7 +893,7 @@ namespace std
       stdx::retain_ptr<T, Traits>,
       std::is_default_constructible_v<std::hash<typename stdx::retain_ptr<T, Traits>::pointer>>>
   {
-    std::size_t operator()(const stdx::retain_ptr<T, Traits>& key)
+    static size_t do_hash(const stdx::retain_ptr<T, Traits>& key)
     noexcept(stdx::detail::is_nothrow_hashable_v<typename stdx::retain_ptr<T, Traits>::pointer>)
     {
       return std::hash<typename stdx::retain_ptr<T, Traits>::pointer>{}(key.get());
